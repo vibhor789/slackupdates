@@ -1,0 +1,226 @@
+{
+  "name": "Slack Daily Updates (HTTP Method)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 19 * * *"
+            }
+          ]
+        },
+        "timezone": "America/New_York"
+      },
+      "name": "Schedule: 7 PM EST Daily",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://slack.com/api/conversations.list",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "types",
+              "value": "public_channel,private_channel,mpim,im"
+            },
+            {
+              "name": "exclude_archived",
+              "value": "true"
+            },
+            {
+              "name": "limit",
+              "value": "200"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Slack API: Get All Channels",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [470, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "CREATE_THIS_CREDENTIAL",
+          "name": "Slack Bot Token"
+        }
+      },
+      "notes": "Gets all channels, DMs, group DMs using Bot Token"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract channels from Slack API response\nconst response = $input.first().json;\n\nif (!response.ok) {\n  throw new Error(`Slack API Error: ${response.error}`);\n}\n\nconst channels = response.channels || [];\nconst oneDayAgo = Math.floor((Date.now() - 86400000) / 1000);\n\n// Map each channel to include query parameters\nconst output = channels.map(channel => ({\n  channelId: channel.id,\n  channelName: channel.name || channel.user || 'DM',\n  isChannel: channel.is_channel || false,\n  isGroup: channel.is_group || false,\n  isIm: channel.is_im || false,\n  isMpim: channel.is_mpim || false,\n  oldest: oneDayAgo.toString()\n}));\n\nreturn output;"
+      },
+      "name": "Process Channels",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [690, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://slack.com/api/conversations.history",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "channel",
+              "value": "={{ $json.channelId }}"
+            },
+            {
+              "name": "oldest",
+              "value": "={{ $json.oldest }}"
+            },
+            {
+              "name": "limit",
+              "value": "100"
+            }
+          ]
+        },
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 1000
+            }
+          }
+        }
+      },
+      "name": "Slack API: Get Channel History",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [910, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "CREATE_THIS_CREDENTIAL",
+          "name": "Slack Bot Token"
+        }
+      },
+      "notes": "Fetches messages from last 24 hours for each channel"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Process Slack messages and format for Google Sheets\nconst items = $input.all();\nconst output = [];\n\nfor (const item of items) {\n  const response = item.json;\n  const channelName = $node['Process Channels'].json.channelName;\n  \n  if (!response.ok) {\n    console.log(`Error for channel ${channelName}: ${response.error}`);\n    continue;\n  }\n  \n  const messages = response.messages || [];\n  \n  for (const message of messages) {\n    // Skip bot messages if desired (remove this if you want bot messages)\n    // if (message.bot_id && !message.user) continue;\n    \n    // Convert timestamp\n    const timestamp = parseFloat(message.ts) * 1000;\n    const date = new Date(timestamp);\n    \n    // Format date/time\n    const formattedDate = date.toLocaleDateString('en-US', {\n      year: 'numeric',\n      month: '2-digit',\n      day: '2-digit'\n    });\n    const formattedTime = date.toLocaleTimeString('en-US', {\n      hour: '2-digit',\n      minute: '2-digit',\n      hour12: true\n    });\n    \n    // Get user\n    const user = message.user || message.bot_id || message.username || 'Unknown';\n    \n    // Get message text\n    const text = message.text || '';\n    \n    // Check if thread reply\n    const isThreadReply = message.thread_ts && message.thread_ts !== message.ts;\n    \n    // Get reactions\n    const reactions = message.reactions \n      ? message.reactions.map(r => `${r.name} (${r.count})`).join(', ')\n      : '';\n    \n    // Check attachments\n    const hasFiles = (message.files && message.files.length > 0);\n    const hasAttachments = (message.attachments && message.attachments.length > 0);\n    const attachmentCount = (message.files?.length || 0) + (message.attachments?.length || 0);\n    \n    output.push({\n      date: formattedDate,\n      time: formattedTime,\n      channel: channelName,\n      user: user,\n      message: text,\n      threadReply: isThreadReply ? 'Yes' : 'No',\n      reactions: reactions,\n      attachments: attachmentCount > 0 ? `${attachmentCount} file(s)` : 'None',\n      timestamp: message.ts\n    });\n  }\n}\n\nreturn output;"
+      },
+      "name": "Format for Google Sheets",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1130, 300]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Sheet1",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Date": "={{ $json.date }}",
+            "Time": "={{ $json.time }}",
+            "Channel": "={{ $json.channel }}",
+            "User": "={{ $json.user }}",
+            "Message": "={{ $json.message }}",
+            "Thread Reply": "={{ $json.threadReply }}",
+            "Reactions": "={{ $json.reactions }}",
+            "Attachments": "={{ $json.attachments }}"
+          }
+        },
+        "options": {}
+      },
+      "name": "Append to Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.1,
+      "position": [1350, 300],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "YOUR_GOOGLE_SHEETS_CREDENTIAL",
+          "name": "Google Sheets"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Schedule: 7 PM EST Daily": {
+      "main": [
+        [
+          {
+            "node": "Slack API: Get All Channels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack API: Get All Channels": {
+      "main": [
+        [
+          {
+            "node": "Process Channels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Channels": {
+      "main": [
+        [
+          {
+            "node": "Slack API: Get Channel History",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack API: Get Channel History": {
+      "main": [
+        [
+          {
+            "node": "Format for Google Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format for Google Sheets": {
+      "main": [
+        [
+          {
+            "node": "Append to Google Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2024-11-11T00:00:00.000Z",
+  "versionId": "1"
+}

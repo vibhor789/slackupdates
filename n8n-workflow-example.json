@@ -1,0 +1,168 @@
+{
+  "name": "Slack Daily Updates to Google Sheets",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 * * *"
+            }
+          ]
+        }
+      },
+      "name": "Daily at 9 AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [250, 300],
+      "webhookId": "schedule-daily"
+    },
+    {
+      "parameters": {
+        "resource": "channel",
+        "operation": "getAll",
+        "returnAll": true,
+        "filters": {
+          "excludeArchived": true,
+          "types": ["public_channel", "private_channel", "mpim", "im"]
+        }
+      },
+      "name": "Get All Slack Channels",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 1,
+      "position": [450, 300],
+      "credentials": {
+        "slackOAuth2Api": {
+          "id": "YOUR_SLACK_CREDENTIAL_ID",
+          "name": "Slack OAuth2 API"
+        }
+      },
+      "notes": "Requires: channels:read, groups:read, im:read, mpim:read"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Calculate timestamp for 24 hours ago\nconst oneDayAgo = Math.floor((Date.now() - 86400000) / 1000);\n\n// Get channel info from previous node\nconst channel = $input.item.json;\n\nreturn {\n  channelId: channel.id,\n  channelName: channel.name || 'DM',\n  oldest: oneDayAgo.toString(),\n  limit: 100\n};"
+      },
+      "name": "Prepare Channel Query",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "getAll",
+        "channelId": "={{ $json.channelId }}",
+        "returnAll": false,
+        "limit": 100,
+        "filters": {
+          "oldest": "={{ $json.oldest }}"
+        }
+      },
+      "name": "Get Channel Messages",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 1,
+      "position": [850, 300],
+      "credentials": {
+        "slackOAuth2Api": {
+          "id": "YOUR_SLACK_CREDENTIAL_ID",
+          "name": "Slack OAuth2 API"
+        }
+      },
+      "notes": "Requires: channels:history, groups:history, im:history, mpim:history"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Format Slack message for Google Sheets\nconst message = $input.item.json;\nconst channelName = $node['Prepare Channel Query'].json.channelName;\n\n// Convert Slack timestamp to readable date/time\nconst timestamp = parseFloat(message.ts) * 1000;\nconst date = new Date(timestamp);\n\nconst formattedDate = date.toLocaleDateString('en-US');\nconst formattedTime = date.toLocaleTimeString('en-US');\n\n// Extract user (if available)\nconst user = message.user || message.bot_id || 'Unknown';\n\n// Get text content\nconst text = message.text || '';\n\n// Check if it's a thread reply\nconst isThreadReply = message.thread_ts && message.thread_ts !== message.ts;\n\n// Get reactions if any\nconst reactions = message.reactions \n  ? message.reactions.map(r => `${r.name}:${r.count}`).join(', ')\n  : '';\n\n// Check for attachments/files\nconst hasAttachments = (message.files && message.files.length > 0) || \n                       (message.attachments && message.attachments.length > 0);\nconst attachmentInfo = hasAttachments ? 'Yes' : 'No';\n\nreturn {\n  date: formattedDate,\n  time: formattedTime,\n  channel: channelName,\n  user: user,\n  message: text,\n  isThreadReply: isThreadReply ? 'Yes' : 'No',\n  reactions: reactions,\n  hasAttachments: attachmentInfo,\n  permalink: message.permalink || ''\n};"
+      },
+      "name": "Format Message Data",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1050, 300]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "sheetId": "YOUR_SHEET_ID",
+        "range": "Sheet1!A:I",
+        "options": {
+          "valueInputMode": "USER_ENTERED"
+        }
+      },
+      "name": "Append to Google Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 2,
+      "position": [1250, 300],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "YOUR_GOOGLE_CREDENTIAL_ID",
+          "name": "Google Sheets OAuth2 API"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Daily at 9 AM": {
+      "main": [
+        [
+          {
+            "node": "Get All Slack Channels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get All Slack Channels": {
+      "main": [
+        [
+          {
+            "node": "Prepare Channel Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Channel Query": {
+      "main": [
+        [
+          {
+            "node": "Get Channel Messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Channel Messages": {
+      "main": [
+        [
+          {
+            "node": "Format Message Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Message Data": {
+      "main": [
+        [
+          {
+            "node": "Append to Google Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {},
+  "staticData": null,
+  "meta": {
+    "instanceId": "your-n8n-instance"
+  },
+  "tags": []
+}
