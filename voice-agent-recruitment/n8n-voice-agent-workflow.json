@@ -1,0 +1,788 @@
+{
+  "name": "Voice Agent Recruitment - Complete System",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "workflow-description",
+      "name": "📋 Workflow Overview",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [0, 0],
+      "notes": "This workflow system includes:\n1. TRIGGER: Initiate calls from Airtable\n2. WEBHOOK: Receive call results from ElevenLabs\n3. UPDATE: Store results back to Airtable\n4. NOTIFY: Alert recruiters of hot leads"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "⏰ Hourly Call Scheduler",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [200, 200],
+      "notes": "Runs every hour during business hours (configure timezone)"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "business-hours-check",
+              "leftValue": "={{ $now.hour }}",
+              "rightValue": 8,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            },
+            {
+              "id": "business-hours-check-2",
+              "leftValue": "={{ $now.hour }}",
+              "rightValue": 20,
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "check-business-hours",
+      "name": "🕐 Business Hours Check",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [400, 200],
+      "notes": "Only run between 8am-8pm (TCPA compliance)"
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "base": {
+          "__rl": true,
+          "value": "YOUR_BASE_ID",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Candidates",
+          "mode": "list"
+        },
+        "filterByFormula": "AND({Call Status}='Pending Call', {Do Not Call}=FALSE(), {Call Attempts}<3)",
+        "options": {
+          "fields": [
+            "Full Name",
+            "Phone Number",
+            "Email",
+            "Previous Role Applied",
+            "Niche/Industry",
+            "Last Known Salary",
+            "Last Known Location",
+            "Recruiter Assigned"
+          ]
+        }
+      },
+      "id": "get-candidates-to-call",
+      "name": "📊 Get Candidates to Call",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [600, 200],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "YOUR_AIRTABLE_CREDENTIAL_ID",
+          "name": "Airtable API Token"
+        }
+      },
+      "notes": "Fetches candidates with 'Pending Call' status who haven't opted out"
+    },
+    {
+      "parameters": {
+        "batchSize": 10,
+        "options": {}
+      },
+      "id": "limit-batch",
+      "name": "📦 Limit Batch Size",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [800, 200],
+      "notes": "Process 10 candidates at a time to avoid rate limits"
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "base": {
+          "__rl": true,
+          "value": "YOUR_BASE_ID",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Client Requirements",
+          "mode": "list"
+        },
+        "filterByFormula": "AND({Active}=TRUE(), {Niche/Industry}='{{ $json[\"Niche/Industry\"] }}')",
+        "options": {
+          "fields": [
+            "Job Title",
+            "Client Company",
+            "Salary Range Min",
+            "Salary Range Max",
+            "Location",
+            "Remote Option",
+            "Required Skills"
+          ]
+        }
+      },
+      "id": "get-matching-job",
+      "name": "💼 Get Matching Job",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [1000, 200],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "YOUR_AIRTABLE_CREDENTIAL_ID",
+          "name": "Airtable API Token"
+        }
+      },
+      "notes": "Gets active job requirement matching candidate's niche"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Prepare data for ElevenLabs API call\nconst candidate = $('📊 Get Candidates to Call').item.json;\nconst job = $('💼 Get Matching Job').first().json;\n\n// Format salary range\nconst salaryRange = job['Salary Range Min'] && job['Salary Range Max'] \n  ? `$${job['Salary Range Min'].toLocaleString()} - $${job['Salary Range Max'].toLocaleString()}`\n  : 'Competitive salary';\n\n// Build the dynamic variables for the prompt\nconst dynamicVariables = {\n  agency_name: 'YOUR_AGENCY_NAME', // Replace with your agency name\n  candidate_name: candidate['Full Name'].split(' ')[0], // First name only\n  candidate_email: candidate['Email'] || '',\n  previous_role: candidate['Previous Role Applied'] || 'a position',\n  niche: candidate['Niche/Industry'] || 'your field',\n  job_title: job['Job Title'] || 'an exciting opportunity',\n  company_name: job['Client Company'] || 'one of our clients',\n  job_location: job['Location'] || job['Remote Option'] || 'Flexible',\n  salary_range: salaryRange,\n  last_location: candidate['Last Known Location'] || '',\n  callback_number: 'YOUR_CALLBACK_NUMBER', // Replace with your number\n  recruiter_name: candidate['Recruiter Assigned'] || 'our team'\n};\n\n// Format phone number for ElevenLabs (E.164 format)\nlet phoneNumber = candidate['Phone Number'];\nif (phoneNumber && !phoneNumber.startsWith('+')) {\n  phoneNumber = '+1' + phoneNumber.replace(/\\D/g, '');\n}\n\nreturn {\n  candidate_id: candidate.id,\n  phone_number: phoneNumber,\n  first_message: `Hi, is this ${dynamicVariables.candidate_name}?`,\n  dynamic_variables: dynamicVariables,\n  metadata: {\n    airtable_candidate_id: candidate.id,\n    niche: candidate['Niche/Industry'],\n    job_id: job.id || null\n  }\n};"
+      },
+      "id": "prepare-call-data",
+      "name": "⚙️ Prepare Call Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1200, 200],
+      "notes": "Formats candidate and job data for ElevenLabs API"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.elevenlabs.io/v1/convai/conversations",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"agent_id\": \"YOUR_ELEVENLABS_AGENT_ID\",\n  \"phone_number\": \"{{ $json.phone_number }}\",\n  \"first_message\": \"{{ $json.first_message }}\",\n  \"dynamic_variables\": {{ JSON.stringify($json.dynamic_variables) }},\n  \"metadata\": {{ JSON.stringify($json.metadata) }},\n  \"webhook_url\": \"YOUR_N8N_WEBHOOK_URL/webhook/elevenlabs-call-complete\"\n}",
+        "options": {}
+      },
+      "id": "initiate-elevenlabs-call",
+      "name": "📞 Initiate ElevenLabs Call",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1400, 200],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "YOUR_ELEVENLABS_CREDENTIAL_ID",
+          "name": "ElevenLabs API Key"
+        }
+      },
+      "notes": "Initiates outbound call via ElevenLabs Conversational AI"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "base": {
+          "__rl": true,
+          "value": "YOUR_BASE_ID",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Candidates",
+          "mode": "list"
+        },
+        "id": "={{ $('⚙️ Prepare Call Data').item.json.candidate_id }}",
+        "fields": {
+          "fieldValues": [
+            {
+              "fieldId": "Call Status",
+              "fieldValue": "In Progress"
+            },
+            {
+              "fieldId": "Last Call Date",
+              "fieldValue": "={{ $now.toISO() }}"
+            },
+            {
+              "fieldId": "Call Attempts",
+              "fieldValue": "={{ $('📊 Get Candidates to Call').item.json['Call Attempts'] + 1 }}"
+            }
+          ]
+        }
+      },
+      "id": "update-status-in-progress",
+      "name": "📝 Update Status: In Progress",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [1600, 200],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "YOUR_AIRTABLE_CREDENTIAL_ID",
+          "name": "Airtable API Token"
+        }
+      },
+      "notes": "Updates candidate status to 'In Progress' while call is active"
+    },
+    {
+      "parameters": {
+        "amount": 30,
+        "unit": "seconds"
+      },
+      "id": "wait-between-calls",
+      "name": "⏳ Wait 30s Between Calls",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1800, 200],
+      "notes": "Rate limiting between calls"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "elevenlabs-call-complete",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "webhook-call-complete",
+      "name": "🔔 Webhook: Call Complete",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [200, 500],
+      "webhookId": "elevenlabs-call-complete",
+      "notes": "Receives call completion data from ElevenLabs"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse ElevenLabs webhook data\nconst webhookData = $input.first().json;\n\n// Extract call outcome and collected data\nconst conversationData = webhookData.conversation_data || {};\nconst analysis = webhookData.analysis || {};\nconst metadata = webhookData.metadata || {};\n\n// Map ElevenLabs outcomes to our status values\nconst outcomeMapping = {\n  'interested': 'Completed - Interested',\n  'not_interested': 'Completed - Not Interested',\n  'callback': 'Call Back Later',\n  'no_answer': 'No Answer',\n  'voicemail': 'Voicemail Left',\n  'wrong_number': 'Wrong Number',\n  'opted_out': 'Do Not Call'\n};\n\n// Extract collected information\nconst callData = {\n  airtable_candidate_id: metadata.airtable_candidate_id,\n  elevenlabs_call_id: webhookData.conversation_id,\n  \n  // Call metadata\n  call_duration: webhookData.duration_seconds || 0,\n  recording_url: webhookData.recording_url || '',\n  transcript: webhookData.transcript || '',\n  \n  // Outcome\n  call_outcome: analysis.call_outcome || 'unknown',\n  call_status: outcomeMapping[analysis.call_outcome] || 'Completed - Not Interested',\n  \n  // Collected data\n  employment_status: analysis.employment_status || '',\n  availability: analysis.availability || '',\n  salary_expectation: analysis.salary_expectation || '',\n  location_preference: analysis.location_preference || '',\n  preferred_location: analysis.preferred_location || '',\n  updated_skills: analysis.updated_skills || '',\n  \n  // Assessment\n  interest_level: analysis.interest_level || 3,\n  sentiment: analysis.sentiment || 'neutral',\n  follow_up_required: analysis.interest_level >= 4,\n  follow_up_notes: analysis.follow_up_notes || '',\n  callback_datetime: analysis.callback_datetime || null,\n  \n  // For opt-out\n  do_not_call: analysis.call_outcome === 'opted_out'\n};\n\nreturn callData;"
+      },
+      "id": "parse-call-results",
+      "name": "🔍 Parse Call Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [400, 500],
+      "notes": "Parses webhook data and maps to Airtable fields"
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": {
+          "__rl": true,
+          "value": "YOUR_BASE_ID",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Call Records",
+          "mode": "list"
+        },
+        "fields": {
+          "fieldValues": [
+            {
+              "fieldId": "Candidate",
+              "fieldValue": "={{ [$json.airtable_candidate_id] }}"
+            },
+            {
+              "fieldId": "Call Date Time",
+              "fieldValue": "={{ $now.toISO() }}"
+            },
+            {
+              "fieldId": "Call Duration",
+              "fieldValue": "={{ $json.call_duration }}"
+            },
+            {
+              "fieldId": "Call Outcome",
+              "fieldValue": "={{ $json.call_outcome }}"
+            },
+            {
+              "fieldId": "Recording URL",
+              "fieldValue": "={{ $json.recording_url }}"
+            },
+            {
+              "fieldId": "Transcript",
+              "fieldValue": "={{ $json.transcript }}"
+            },
+            {
+              "fieldId": "Employment Status",
+              "fieldValue": "={{ $json.employment_status }}"
+            },
+            {
+              "fieldId": "Availability",
+              "fieldValue": "={{ $json.availability }}"
+            },
+            {
+              "fieldId": "Expected Salary",
+              "fieldValue": "={{ $json.salary_expectation }}"
+            },
+            {
+              "fieldId": "Preferred Location",
+              "fieldValue": "={{ $json.preferred_location }}"
+            },
+            {
+              "fieldId": "Remote Preference",
+              "fieldValue": "={{ $json.location_preference }}"
+            },
+            {
+              "fieldId": "Updated Skills",
+              "fieldValue": "={{ $json.updated_skills }}"
+            },
+            {
+              "fieldId": "Interest Level",
+              "fieldValue": "={{ $json.interest_level }}"
+            },
+            {
+              "fieldId": "Sentiment",
+              "fieldValue": "={{ $json.sentiment }}"
+            },
+            {
+              "fieldId": "Follow Up Required",
+              "fieldValue": "={{ $json.follow_up_required }}"
+            },
+            {
+              "fieldId": "Follow Up Notes",
+              "fieldValue": "={{ $json.follow_up_notes }}"
+            },
+            {
+              "fieldId": "ElevenLabs Call ID",
+              "fieldValue": "={{ $json.elevenlabs_call_id }}"
+            }
+          ]
+        }
+      },
+      "id": "create-call-record",
+      "name": "📝 Create Call Record",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [600, 500],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "YOUR_AIRTABLE_CREDENTIAL_ID",
+          "name": "Airtable API Token"
+        }
+      },
+      "notes": "Creates new record in Call Records table"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "base": {
+          "__rl": true,
+          "value": "YOUR_BASE_ID",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Candidates",
+          "mode": "list"
+        },
+        "id": "={{ $('🔍 Parse Call Results').item.json.airtable_candidate_id }}",
+        "fields": {
+          "fieldValues": [
+            {
+              "fieldId": "Call Status",
+              "fieldValue": "={{ $('🔍 Parse Call Results').item.json.call_status }}"
+            },
+            {
+              "fieldId": "Do Not Call",
+              "fieldValue": "={{ $('🔍 Parse Call Results').item.json.do_not_call }}"
+            },
+            {
+              "fieldId": "Next Call Date",
+              "fieldValue": "={{ $('🔍 Parse Call Results').item.json.callback_datetime }}"
+            }
+          ]
+        }
+      },
+      "id": "update-candidate-status",
+      "name": "📝 Update Candidate Status",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [800, 500],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "YOUR_AIRTABLE_CREDENTIAL_ID",
+          "name": "Airtable API Token"
+        }
+      },
+      "notes": "Updates candidate record with call outcome"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "hot-lead-check",
+              "leftValue": "={{ $('🔍 Parse Call Results').item.json.interest_level }}",
+              "rightValue": 4,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "check-hot-lead",
+      "name": "🔥 Is Hot Lead?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1000, 500],
+      "notes": "Checks if candidate is highly interested (level 4+)"
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "base": {
+          "__rl": true,
+          "value": "YOUR_BASE_ID",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Candidates",
+          "mode": "list"
+        },
+        "id": "={{ $('🔍 Parse Call Results').item.json.airtable_candidate_id }}"
+      },
+      "id": "get-candidate-details",
+      "name": "📊 Get Candidate Details",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [1200, 400],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "YOUR_AIRTABLE_CREDENTIAL_ID",
+          "name": "Airtable API Token"
+        }
+      },
+      "notes": "Gets full candidate info for notification"
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "base": {
+          "__rl": true,
+          "value": "YOUR_BASE_ID",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Recruiters",
+          "mode": "list"
+        },
+        "id": "={{ $('📊 Get Candidate Details').item.json.fields['Recruiter Assigned'][0] }}"
+      },
+      "id": "get-recruiter-info",
+      "name": "👤 Get Recruiter Info",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [1400, 400],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "YOUR_AIRTABLE_CREDENTIAL_ID",
+          "name": "Airtable API Token"
+        }
+      },
+      "notes": "Gets recruiter email for notification"
+    },
+    {
+      "parameters": {
+        "fromEmail": "notifications@youragency.com",
+        "toEmail": "={{ $('👤 Get Recruiter Info').item.json.fields['Email'] }}",
+        "subject": "🔥 Hot Lead Alert: {{ $('📊 Get Candidate Details').item.json.fields['Full Name'] }}",
+        "emailType": "html",
+        "html": "=<h2>Hot Lead Alert!</h2>\n<p>A candidate just expressed high interest in our opportunity!</p>\n\n<h3>Candidate Details</h3>\n<ul>\n  <li><strong>Name:</strong> {{ $('📊 Get Candidate Details').item.json.fields['Full Name'] }}</li>\n  <li><strong>Phone:</strong> {{ $('📊 Get Candidate Details').item.json.fields['Phone Number'] }}</li>\n  <li><strong>Email:</strong> {{ $('📊 Get Candidate Details').item.json.fields['Email'] }}</li>\n  <li><strong>Niche:</strong> {{ $('📊 Get Candidate Details').item.json.fields['Niche/Industry'] }}</li>\n</ul>\n\n<h3>Call Summary</h3>\n<ul>\n  <li><strong>Interest Level:</strong> {{ $('🔍 Parse Call Results').item.json.interest_level }}/5</li>\n  <li><strong>Availability:</strong> {{ $('🔍 Parse Call Results').item.json.availability }}</li>\n  <li><strong>Salary Expectation:</strong> {{ $('🔍 Parse Call Results').item.json.salary_expectation }}</li>\n  <li><strong>Location Preference:</strong> {{ $('🔍 Parse Call Results').item.json.location_preference }}</li>\n  <li><strong>Employment Status:</strong> {{ $('🔍 Parse Call Results').item.json.employment_status }}</li>\n</ul>\n\n<h3>Skills Mentioned</h3>\n<p>{{ $('🔍 Parse Call Results').item.json.updated_skills }}</p>\n\n<h3>Notes</h3>\n<p>{{ $('🔍 Parse Call Results').item.json.follow_up_notes }}</p>\n\n<p><strong>Recording:</strong> <a href=\"{{ $('🔍 Parse Call Results').item.json.recording_url }}\">Listen to call</a></p>\n\n<p><a href=\"https://airtable.com/YOUR_BASE_ID/YOUR_TABLE_ID/{{ $('📊 Get Candidate Details').item.json.id }}\">View in Airtable</a></p>\n\n<p>Please follow up within 24 hours!</p>",
+        "options": {}
+      },
+      "id": "send-hot-lead-email",
+      "name": "📧 Email: Hot Lead Alert",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [1600, 400],
+      "credentials": {
+        "smtp": {
+          "id": "YOUR_SMTP_CREDENTIAL_ID",
+          "name": "SMTP Account"
+        }
+      },
+      "notes": "Sends email to recruiter about hot lead"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "manual-call-trigger",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "manual-call-webhook",
+      "name": "🎯 Manual Call Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [200, 800],
+      "webhookId": "manual-call-trigger",
+      "notes": "Trigger a single call manually via API"
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "base": {
+          "__rl": true,
+          "value": "YOUR_BASE_ID",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Candidates",
+          "mode": "list"
+        },
+        "id": "={{ $json.body.candidate_id }}"
+      },
+      "id": "get-single-candidate",
+      "name": "📊 Get Single Candidate",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [400, 800],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "YOUR_AIRTABLE_CREDENTIAL_ID",
+          "name": "Airtable API Token"
+        }
+      },
+      "notes": "Gets candidate for manual call"
+    }
+  ],
+  "connections": {
+    "⏰ Hourly Call Scheduler": {
+      "main": [
+        [
+          {
+            "node": "🕐 Business Hours Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🕐 Business Hours Check": {
+      "main": [
+        [
+          {
+            "node": "📊 Get Candidates to Call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📊 Get Candidates to Call": {
+      "main": [
+        [
+          {
+            "node": "📦 Limit Batch Size",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📦 Limit Batch Size": {
+      "main": [
+        [
+          {
+            "node": "💼 Get Matching Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "💼 Get Matching Job": {
+      "main": [
+        [
+          {
+            "node": "⚙️ Prepare Call Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "⚙️ Prepare Call Data": {
+      "main": [
+        [
+          {
+            "node": "📞 Initiate ElevenLabs Call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📞 Initiate ElevenLabs Call": {
+      "main": [
+        [
+          {
+            "node": "📝 Update Status: In Progress",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📝 Update Status: In Progress": {
+      "main": [
+        [
+          {
+            "node": "⏳ Wait 30s Between Calls",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "⏳ Wait 30s Between Calls": {
+      "main": [
+        [
+          {
+            "node": "📦 Limit Batch Size",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🔔 Webhook: Call Complete": {
+      "main": [
+        [
+          {
+            "node": "🔍 Parse Call Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🔍 Parse Call Results": {
+      "main": [
+        [
+          {
+            "node": "📝 Create Call Record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📝 Create Call Record": {
+      "main": [
+        [
+          {
+            "node": "📝 Update Candidate Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📝 Update Candidate Status": {
+      "main": [
+        [
+          {
+            "node": "🔥 Is Hot Lead?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🔥 Is Hot Lead?": {
+      "main": [
+        [
+          {
+            "node": "📊 Get Candidate Details",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📊 Get Candidate Details": {
+      "main": [
+        [
+          {
+            "node": "👤 Get Recruiter Info",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "👤 Get Recruiter Info": {
+      "main": [
+        [
+          {
+            "node": "📧 Email: Hot Lead Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🎯 Manual Call Trigger": {
+      "main": [
+        [
+          {
+            "node": "📊 Get Single Candidate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "voice-agent",
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z"
+    },
+    {
+      "name": "recruitment",
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z"
+    }
+  ],
+  "pinData": {}
+}
